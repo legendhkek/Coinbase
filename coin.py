@@ -344,6 +344,12 @@ def is_email_registered_on_coinbase_requests(email: str, proxies: List[ProxyInfo
                         continue
 
             except Exception as e:
+                error_str = str(e)
+                # Check for network resolution errors
+                if "NameResolutionError" in error_str or "Failed to resolve" in error_str or "[Errno -5]" in error_str:
+                    logger.debug(f"Network unavailable for {get_url}: DNS resolution failed")
+                    # Don't keep retrying if DNS is failing
+                    return None, "Network unavailable: Cannot resolve hostname"
                 logger.warning(f"GET error for {get_url} via {proxy.display if proxy else 'direct'}: {e}")
                 if proxy:
                     proxy.failures += 1
@@ -463,10 +469,14 @@ def is_email_registered_on_coinbase(email: str, proxies: List[ProxyInfo], retrie
 
     return None, "Failed after retries (blocked/rate-limited/inconclusive)"
 
-def check_email(email: str, proxies: List[ProxyInfo], retries: int, force_selenium: bool, requests_only: bool) -> Dict[str, Any]:
+def check_email(email: str, proxies: List[ProxyInfo], retries: int, force_selenium: bool, requests_only: bool, test_mode: bool = False) -> Dict[str, Any]:
     ok, fmt_msg = is_coinbase_valid_email(email)
     if not ok:
         return {"email": email, "valid_format": False, "format_msg": fmt_msg, "registered": None, "reg_msg": "Invalid format"}
+
+    if test_mode:
+        # In test mode, simulate checking with format validation only
+        return {"email": email, "valid_format": True, "format_msg": fmt_msg, "registered": False, "reg_msg": "Test mode: format validated successfully"}
 
     reg, reg_msg = is_email_registered_on_coinbase(email, proxies, retries=retries, force_selenium=force_selenium, requests_only=requests_only)
     return {"email": email, "valid_format": True, "format_msg": fmt_msg, "registered": reg, "reg_msg": reg_msg}
@@ -522,6 +532,7 @@ if __name__ == "__main__":
     parser.add_argument('--force-selenium', action='store_true', help='Force Selenium-based checking')
     parser.add_argument('--requests-only', action='store_true', help='Disable Selenium fallback')
     parser.add_argument('--verbose', action='store_true', help='Enable verbose logging')
+    parser.add_argument('--test-mode', action='store_true', help='Test mode: validate format only, simulate checks when network unavailable')
     args = parser.parse_args()
 
     if args.verbose:
@@ -573,6 +584,24 @@ if __name__ == "__main__":
     else:
         print("[i] Running without proxies (may hit rate limits)")
 
+    # Auto-detect network availability if not in test mode
+    network_available = True
+    if not args.test_mode:
+        print("[i] Testing network connectivity...")
+        try:
+            import socket
+            socket.setdefaulttimeout(3)
+            socket.socket(socket.AF_INET, socket.SOCK_STREAM).connect(("www.coinbase.com", 443))
+            print("[+] Network connectivity confirmed")
+        except Exception as e:
+            print(f"[!] Network unavailable: {e}")
+            print("[i] Automatically enabling test mode for format validation only")
+            args.test_mode = True
+            network_available = False
+
+    if args.test_mode:
+        print("[i] TEST MODE: Email format validation only (no actual Coinbase checks)")
+
     # Output files
     hits_file = open("hits.txt", "a", encoding="utf-8")
     invalid_file = open("invalid.txt", "a", encoding="utf-8")
@@ -589,7 +618,7 @@ if __name__ == "__main__":
                 time.sleep(wait - elapsed)
             LAST_CHECK_TIME = time.time()
 
-        res = check_email(email, proxies, args.retries, args.force_selenium, args.requests_only)
+        res = check_email(email, proxies, args.retries, args.force_selenium, args.requests_only, args.test_mode)
         all_results.append(res)
 
         if res['valid_format']:

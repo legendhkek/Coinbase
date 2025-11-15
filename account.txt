@@ -27,3 +27,12 @@ liam.neeson@yahoo.com
 mary.poppins@outlook.com
 nathan.drake@gmail.com
 olivia.wilde@yahoo.com
+# Invalid format tests - these should be caught by validation
+invalid.email@
+@nodomain.com
+not-an-email
+test@.com
+user@domain
+toolonglocal12345678901234567890123456789012345678901234567890123456789012345@test.com
+test@tempmail.org
+disposable@10minutemail.com
