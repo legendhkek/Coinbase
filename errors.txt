@@ -1,8 +1,0 @@
-invalid.email@ | Invalid format
-@nodomain.com | Invalid format
-not-an-email | Invalid format
-test@.com | Invalid format
-user@domain | Invalid format
-toolonglocal12345678901234567890123456789012345678901234567890123456789012345@test.com | Local part >64
-test@tempmail.org | Disposable domain
-disposable@10minutemail.com | Disposable domain
