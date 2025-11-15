@@ -1,0 +1,3 @@
+jane.smith@yahoo.com | Failed after retries (blocked/rate-limited/inconclusive)
+john.doe@gmail.com | Failed after retries (blocked/rate-limited/inconclusive)
+test.user@outlook.com | Failed after retries (blocked/rate-limited/inconclusive)
