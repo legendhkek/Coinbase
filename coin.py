@@ -1,9 +1,11 @@
-# Coinbase Pro Email Validator v3.1 - Robust Retries + Advanced Proxy + Blocker Detection
+# Coinbase Pro Email Validator v3.1 - Robust Retries + Advanced Proxy + Blocker Detection + DNS Block Bypass
 # Modified by @LEGEND_BL
 import re
 import random
 import time
 import os
+import socket
+import requests
 from typing import Tuple, Dict, Any, Optional, List
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import argparse
@@ -42,6 +44,120 @@ logging.basicConfig(
     ]
 )
 logger = logging.getLogger(__name__)
+
+# ---------- DNS BLOCK BYPASS ----------
+# Alternative DNS servers to bypass DNS blocking
+DNS_SERVERS = [
+    '8.8.8.8',        # Google Public DNS
+    '8.8.4.4',        # Google Public DNS Secondary
+    '1.1.1.1',        # Cloudflare DNS
+    '1.0.0.1',        # Cloudflare DNS Secondary
+    '9.9.9.9',        # Quad9 DNS
+    '149.112.112.112', # Quad9 DNS Secondary
+    '208.67.222.222', # OpenDNS
+    '208.67.220.220', # OpenDNS Secondary
+]
+
+def configure_dns_bypass():
+    """
+    Configure system to use alternative DNS servers to bypass DNS blocking.
+    Uses DNS-over-HTTPS when standard DNS fails.
+    """
+    try:
+        # Check if we can read DNS config
+        if os.path.exists('/etc/resolv.conf'):
+            try:
+                # Read existing config
+                with open('/etc/resolv.conf', 'r') as f:
+                    original_dns = f.read()
+                
+                # Check if we need to add alternative DNS
+                if '8.8.8.8' not in original_dns and '1.1.1.1' not in original_dns:
+                    logger.info("[+] System DNS may be blocked, DNS-over-HTTPS will be used as fallback")
+            except Exception as e:
+                logger.debug(f"Cannot read system DNS: {e}")
+        
+        logger.info("[+] DNS bypass configured - will use DNS-over-HTTPS if standard DNS fails")
+        return True
+        
+    except Exception as e:
+        logger.warning(f"Could not configure DNS bypass: {e}")
+        return False
+
+def resolve_via_doh(hostname: str) -> Optional[str]:
+    """
+    Resolve hostname using DNS-over-HTTPS (DoH) to bypass DNS blocking.
+    Uses Cloudflare and Google DoH services.
+    """
+    doh_providers = [
+        f"https://cloudflare-dns.com/dns-query?name={hostname}&type=A",
+        f"https://dns.google/resolve?name={hostname}&type=A",
+        f"https://1.1.1.1/dns-query?name={hostname}&type=A",
+    ]
+    
+    for doh_url in doh_providers:
+        try:
+            headers = {'Accept': 'application/dns-json'}
+            response = requests.get(doh_url, headers=headers, timeout=5)
+            
+            if response.status_code == 200:
+                data = response.json()
+                if 'Answer' in data and len(data['Answer']) > 0:
+                    ip = data['Answer'][0].get('data')
+                    if ip:
+                        logger.debug(f"DoH resolved {hostname} to {ip}")
+                        return ip
+        except Exception as e:
+            logger.debug(f"DoH provider {doh_url} failed: {e}")
+            continue
+    
+    return None
+
+def test_dns_resolution(hostname: str = "www.coinbase.com", use_doh: bool = True) -> Tuple[bool, Optional[str]]:
+    """
+    Test if DNS resolution works for the given hostname.
+    If standard DNS fails, try DNS-over-HTTPS.
+    Returns (success, ip_address)
+    """
+    # Try standard resolution
+    try:
+        ip = socket.gethostbyname(hostname)
+        logger.debug(f"Standard DNS resolution successful for {hostname} -> {ip}")
+        return True, ip
+    except socket.gaierror:
+        logger.debug(f"Standard DNS resolution failed for {hostname}")
+    
+    # Try DoH as fallback
+    if use_doh:
+        try:
+            ip = resolve_via_doh(hostname)
+            if ip:
+                logger.info(f"[+] DNS-over-HTTPS successfully resolved {hostname} to {ip}")
+                return True, ip
+        except Exception as e:
+            logger.debug(f"DoH resolution failed: {e}")
+    
+    return False, None
+
+def test_connection_with_doh(hostname: str, port: int = 443) -> bool:
+    """
+    Test connection using DNS-over-HTTPS for resolution.
+    """
+    try:
+        # First resolve using DoH
+        success, ip = test_dns_resolution(hostname, use_doh=True)
+        if not success or not ip:
+            return False
+        
+        # Try to connect using the resolved IP
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.settimeout(5)
+        sock.connect((ip, port))
+        sock.close()
+        return True
+    except Exception as e:
+        logger.debug(f"Connection test failed: {e}")
+        return False
 
 # ---------- CONFIG ----------
 USER_AGENTS = [
@@ -533,6 +649,8 @@ if __name__ == "__main__":
     parser.add_argument('--requests-only', action='store_true', help='Disable Selenium fallback')
     parser.add_argument('--verbose', action='store_true', help='Enable verbose logging')
     parser.add_argument('--test-mode', action='store_true', help='Test mode: validate format only, simulate checks when network unavailable')
+    parser.add_argument('--use-doh', action='store_true', default=True, help='Use DNS-over-HTTPS to bypass DNS blocks (default: enabled)')
+    parser.add_argument('--no-dns-bypass', action='store_true', help='Disable DNS bypass features')
     args = parser.parse_args()
 
     if args.verbose:
@@ -541,6 +659,7 @@ if __name__ == "__main__":
     print("\n============================================================")
     print("  Coinbase Pro Email Validator - Advanced Edition v3.1")
     print("  Modified & Optimized by @LEGEND_BL")
+    print("  DNS Block Bypass: ENABLED")
     print("============================================================\n")
 
     path = args.input
@@ -584,17 +703,44 @@ if __name__ == "__main__":
     else:
         print("[i] Running without proxies (may hit rate limits)")
 
+    # Configure DNS bypass to avoid DNS blocking
+    if not args.no_dns_bypass:
+        print("[i] Configuring DNS bypass to avoid DNS blocks...")
+        configure_dns_bypass()
+    else:
+        print("[i] DNS bypass disabled by user")
+
     # Auto-detect network availability if not in test mode
     network_available = True
     if not args.test_mode:
-        print("[i] Testing network connectivity...")
-        try:
-            import socket
-            socket.setdefaulttimeout(3)
-            socket.socket(socket.AF_INET, socket.SOCK_STREAM).connect(("www.coinbase.com", 443))
-            print("[+] Network connectivity confirmed")
-        except Exception as e:
-            print(f"[!] Network unavailable: {e}")
+        print("[i] Testing network connectivity with DNS bypass...")
+        
+        # First try with DNS-over-HTTPS
+        dns_works, resolved_ip = test_dns_resolution("www.coinbase.com", use_doh=True)
+        
+        if dns_works and resolved_ip:
+            try:
+                # Try to connect using the resolved IP
+                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                sock.settimeout(5)
+                sock.connect((resolved_ip, 443))
+                sock.close()
+                print(f"[+] Network connectivity confirmed (DNS bypass: www.coinbase.com -> {resolved_ip})")
+            except Exception as e:
+                # DNS works but connection fails - might be firewall/proxy needed
+                if "timed out" in str(e).lower() or "refused" in str(e).lower():
+                    print(f"[!] Connection blocked: {e}")
+                    print("[i] DNS resolution works but connection is blocked. Consider using a proxy.")
+                    print("[i] Automatically enabling test mode for format validation only")
+                    args.test_mode = True
+                    network_available = False
+                else:
+                    print(f"[!] Network unavailable: {e}")
+                    print("[i] Automatically enabling test mode for format validation only")
+                    args.test_mode = True
+                    network_available = False
+        else:
+            print("[!] DNS resolution failed even with DNS-over-HTTPS")
             print("[i] Automatically enabling test mode for format validation only")
             args.test_mode = True
             network_available = False

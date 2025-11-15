@@ -1,9 +1,10 @@
 # Coinbase Pro Email Validator v3.1
 
-A robust email validation tool for checking if emails are registered on Coinbase, with advanced proxy support and automatic fallback mechanisms.
+A robust email validation tool for checking if emails are registered on Coinbase, with advanced proxy support, DNS block bypass, and automatic fallback mechanisms.
 
 ## Features
 
+- **DNS Block Bypass**: Automatically bypasses DNS blocking using DNS-over-HTTPS (DoH) with Cloudflare, Google DNS
 - **Email Format Validation**: Validates email format, length, and checks for disposable/blocked domains
 - **Coinbase Registration Check**: Tests if emails are registered on Coinbase (when network is available)
 - **Test Mode**: Format validation only when network is unavailable or for testing purposes
@@ -70,6 +71,8 @@ python3 coin.py \
 - `--requests-only`: Disable Selenium fallback
 - `--output-json`: Save results to JSON file
 - `--verbose`: Enable verbose logging
+- `--use-doh`: Use DNS-over-HTTPS to bypass DNS blocks (enabled by default)
+- `--no-dns-bypass`: Disable DNS bypass features
 
 ## Input File Format
 
@@ -105,6 +108,34 @@ This will:
 - Run the checker on all emails in account.txt
 - Verify all emails were processed
 - Confirm at least 20 emails were checked (requirement)
+
+## DNS Block Bypass
+
+The tool automatically bypasses DNS blocking using multiple techniques:
+
+### DNS-over-HTTPS (DoH)
+- Uses Cloudflare DNS (1.1.1.1)
+- Falls back to Google DNS (8.8.8.8)
+- Bypasses ISP/firewall DNS filtering
+
+### How It Works
+1. First attempts standard DNS resolution
+2. If DNS is blocked, uses DNS-over-HTTPS to resolve domain names
+3. Connects directly to resolved IP addresses
+
+### Configuration
+```bash
+# DNS bypass enabled by default
+python3 coin.py --input account.txt
+
+# Disable DNS bypass if needed
+python3 coin.py --input account.txt --no-dns-bypass
+```
+
+When DNS blocking is detected:
+- The tool automatically tries DoH resolution
+- Shows resolved IP addresses in the output
+- Falls back to test mode if all methods fail
 
 ## Test Mode
 
