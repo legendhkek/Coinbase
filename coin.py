@@ -633,6 +633,102 @@ def prompt_proxy_settings() -> List[ProxyInfo]:
         else:
             print("[!] Please answer yes or no.")
 
+# ---------- ADVANCED BATCH PROCESSING ----------
+def load_progress_state(progress_file: str = "progress.json") -> Dict[str, Any]:
+    """Load previously checked emails to enable resume functionality"""
+    if os.path.exists(progress_file):
+        try:
+            with open(progress_file, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        except Exception as e:
+            logger.warning(f"Could not load progress file: {e}")
+    return {"checked_emails": [], "last_update": None, "total_checked": 0}
+
+def save_progress_state(progress_data: Dict[str, Any], progress_file: str = "progress.json"):
+    """Save progress for resume capability"""
+    try:
+        progress_data["last_update"] = datetime.now().isoformat()
+        with open(progress_file, 'w', encoding='utf-8') as f:
+            json.dump(progress_data, f, indent=2)
+    except Exception as e:
+        logger.warning(f"Could not save progress file: {e}")
+
+def get_already_checked_emails() -> set:
+    """Get set of already checked emails from output files"""
+    checked = set()
+    for filename in ['hits.txt', 'invalid.txt', 'errors.txt']:
+        if os.path.exists(filename):
+            try:
+                with open(filename, 'r', encoding='utf-8') as f:
+                    for line in f:
+                        email = line.split('|')[0].strip()
+                        if '@' in email:
+                            checked.add(email.lower())
+            except Exception as e:
+                logger.debug(f"Error reading {filename}: {e}")
+    return checked
+
+def estimate_completion_time(checked: int, total: int, start_time: float) -> str:
+    """Estimate time remaining for batch processing"""
+    if checked == 0:
+        return "Calculating..."
+    elapsed = time.time() - start_time
+    rate = checked / elapsed
+    remaining = total - checked
+    eta_seconds = remaining / rate if rate > 0 else 0
+    
+    hours = int(eta_seconds // 3600)
+    minutes = int((eta_seconds % 3600) // 60)
+    seconds = int(eta_seconds % 60)
+    
+    if hours > 0:
+        return f"{hours}h {minutes}m {seconds}s"
+    elif minutes > 0:
+        return f"{minutes}m {seconds}s"
+    else:
+        return f"{seconds}s"
+
+def generate_summary_report(all_results: List[Dict[str, Any]], elapsed_time: float) -> str:
+    """Generate detailed summary report for large batches"""
+    total = len(all_results)
+    valid_format = sum(1 for r in all_results if r['valid_format'])
+    invalid_format = total - valid_format
+    
+    registered = sum(1 for r in all_results if r.get('registered') is True)
+    not_registered = sum(1 for r in all_results if r.get('registered') is False)
+    unknown = sum(1 for r in all_results if r.get('registered') is None)
+    
+    rate = total / elapsed_time if elapsed_time > 0 else 0
+    
+    report = f"""
+╔════════════════════════════════════════════════════════════════╗
+║                    BATCH PROCESSING SUMMARY                    ║
+╚════════════════════════════════════════════════════════════════╝
+
+Total Emails Processed:     {total:>6}
+Processing Time:            {elapsed_time:.2f}s
+Average Rate:               {rate:.2f} emails/sec
+
+┌────────────────────────────────────────────────────────────────┐
+│ FORMAT VALIDATION                                              │
+├────────────────────────────────────────────────────────────────┤
+│ Valid Format:             {valid_format:>6} ({valid_format*100/total if total else 0:.1f}%)                │
+│ Invalid Format:           {invalid_format:>6} ({invalid_format*100/total if total else 0:.1f}%)                │
+└────────────────────────────────────────────────────────────────┘
+
+┌────────────────────────────────────────────────────────────────┐
+│ REGISTRATION STATUS                                            │
+├────────────────────────────────────────────────────────────────┤
+│ Registered:               {registered:>6} ({registered*100/total if total else 0:.1f}%)                │
+│ Not Registered:           {not_registered:>6} ({not_registered*100/total if total else 0:.1f}%)                │
+│ Unknown/Error:            {unknown:>6} ({unknown*100/total if total else 0:.1f}%)                │
+└────────────────────────────────────────────────────────────────┘
+
+Results saved to: hits.txt, invalid.txt, errors.txt
+JSON output: results.json (if enabled)
+"""
+    return report
+
 # ---------- MAIN ----------
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Coinbase Pro Email Validator v3.1 - Robust Retries + Advanced Proxy")
@@ -651,6 +747,9 @@ if __name__ == "__main__":
     parser.add_argument('--test-mode', action='store_true', help='Test mode: validate format only, simulate checks when network unavailable')
     parser.add_argument('--use-doh', action='store_true', default=True, help='Use DNS-over-HTTPS to bypass DNS blocks (default: enabled)')
     parser.add_argument('--no-dns-bypass', action='store_true', help='Disable DNS bypass features')
+    parser.add_argument('--resume', action='store_true', help='Resume from previous run (skip already checked emails)')
+    parser.add_argument('--batch-size', type=int, default=0, help='Process emails in batches (0 = process all at once)')
+    parser.add_argument('--save-progress', action='store_true', help='Save progress periodically for large batches')
     args = parser.parse_args()
 
     if args.verbose:
@@ -747,12 +846,41 @@ if __name__ == "__main__":
 
     if args.test_mode:
         print("[i] TEST MODE: Email format validation only (no actual Coinbase checks)")
+    
+    # Resume functionality for large batches
+    emails_to_process = emails
+    if args.resume:
+        print("[i] Resume mode: Checking for previously processed emails...")
+        already_checked = get_already_checked_emails()
+        original_count = len(emails)
+        emails_to_process = [e for e in emails if e.lower() not in already_checked]
+        skipped = original_count - len(emails_to_process)
+        if skipped > 0:
+            print(f"[+] Skipping {skipped} already checked emails")
+            print(f"[+] {len(emails_to_process)} emails remaining to check")
+        else:
+            print("[i] No previously checked emails found, processing all")
+    
+    if not emails_to_process:
+        print("[i] All emails have been checked already!")
+        exit(0)
+    
+    # Batch processing for large datasets
+    if args.batch_size > 0 and len(emails_to_process) > args.batch_size:
+        print(f"[i] Batch processing: {len(emails_to_process)} emails in batches of {args.batch_size}")
+        batches = [emails_to_process[i:i+args.batch_size] for i in range(0, len(emails_to_process), args.batch_size)]
+        print(f"[i] Total batches: {len(batches)}")
+    else:
+        batches = [emails_to_process]
 
     # Output files
     hits_file = open("hits.txt", "a", encoding="utf-8")
     invalid_file = open("invalid.txt", "a", encoding="utf-8")
     errors_file = open("errors.txt", "a", encoding="utf-8")
     all_results: List[Dict[str, Any]] = []
+    
+    start_time = time.time()
+    total_processed = 0
 
     def process_email(email):
         with delay_lock:
@@ -783,21 +911,52 @@ if __name__ == "__main__":
 
         return f"Email: {email} | Format: {'OK' if res['valid_format'] else 'BAD'} | Registered: {status_str} ({res['reg_msg']})"
 
-    with ThreadPoolExecutor(max_workers=args.threads) as executor:
-        futures = [executor.submit(process_email, email) for email in emails]
-        for future in tqdm(as_completed(futures), total=len(emails), desc="Checking emails", unit="email"):
-            try:
-                print(future.result())
-            except Exception as e:
-                logger.error(f"Thread error: {e}")
-                print(f"[!] Thread error: {e}")
+    # Process emails in batches
+    for batch_num, batch in enumerate(batches, 1):
+        if len(batches) > 1:
+            print(f"\n[+] Processing batch {batch_num}/{len(batches)} ({len(batch)} emails)")
+            print(f"[i] Progress: {total_processed}/{len(emails_to_process)} emails checked")
+            if total_processed > 0:
+                eta = estimate_completion_time(total_processed, len(emails_to_process), start_time)
+                print(f"[i] Estimated time remaining: {eta}")
+        
+        with ThreadPoolExecutor(max_workers=args.threads) as executor:
+            futures = [executor.submit(process_email, email) for email in batch]
+            batch_desc = f"Batch {batch_num}/{len(batches)}" if len(batches) > 1 else "Checking emails"
+            for future in tqdm(as_completed(futures), total=len(batch), desc=batch_desc, unit="email"):
+                try:
+                    print(future.result())
+                    total_processed += 1
+                except Exception as e:
+                    logger.error(f"Thread error: {e}")
+                    print(f"[!] Thread error: {e}")
+        
+        # Save progress after each batch if enabled
+        if args.save_progress and len(batches) > 1:
+            progress_data = {
+                "checked_emails": [r['email'] for r in all_results],
+                "total_checked": len(all_results),
+                "batches_completed": batch_num
+            }
+            save_progress_state(progress_data)
+            print(f"[+] Progress saved ({len(all_results)} emails checked)")
 
     hits_file.close(); invalid_file.close(); errors_file.close()
+    
+    elapsed_time = time.time() - start_time
 
     if args.output_json:
         with open("results.json", "w", encoding="utf-8") as json_file:
             json.dump(all_results, json_file, indent=4)
 
-    print("\nDone. Results saved to hits.txt, invalid.txt, errors.txt")
+    print("\n" + "="*64)
+    print("Done. Results saved to hits.txt, invalid.txt, errors.txt")
     if args.output_json:
         print("JSON output saved to results.json")
+    
+    # Generate summary report for large batches
+    if len(emails_to_process) >= 50:
+        print(generate_summary_report(all_results, elapsed_time))
+    else:
+        print(f"\nTotal processed: {len(all_results)} emails in {elapsed_time:.2f}s")
+        print(f"Average rate: {len(all_results)/elapsed_time if elapsed_time > 0 else 0:.2f} emails/sec")

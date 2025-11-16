@@ -1,16 +1,19 @@
 # Coinbase Pro Email Validator v3.1
 
-A robust email validation tool for checking if emails are registered on Coinbase, with advanced proxy support, DNS block bypass, and automatic fallback mechanisms.
+A robust email validation tool for checking if emails are registered on Coinbase, with advanced proxy support, DNS block bypass, batch processing for large datasets (100-200+ emails), and automatic fallback mechanisms.
 
 ## Features
 
+- **Large Batch Processing**: Handle 100-200+ emails efficiently with batch processing and resume capability
 - **DNS Block Bypass**: Automatically bypasses DNS blocking using DNS-over-HTTPS (DoH) with Cloudflare, Google DNS
+- **Resume Capability**: Skip already checked emails when processing large batches
+- **Progress Tracking**: Real-time progress, ETA estimation, and detailed summary reports
 - **Email Format Validation**: Validates email format, length, and checks for disposable/blocked domains
 - **Coinbase Registration Check**: Tests if emails are registered on Coinbase (when network is available)
 - **Test Mode**: Format validation only when network is unavailable or for testing purposes
 - **Auto-Detection**: Automatically detects network unavailability and switches to test mode
 - **Proxy Support**: Advanced proxy rotation with multiple format support
-- **Multi-threaded**: Process multiple emails concurrently
+- **Multi-threaded**: Process multiple emails concurrently (configurable thread count)
 - **Selenium Fallback**: Automatic fallback to Selenium when JavaScript challenges are detected
 
 ## Installation
@@ -43,6 +46,25 @@ python3 coin.py --input account.txt --proxy "host:port:user:pass"
 python3 coin.py --input account.txt --proxies proxies.txt
 ```
 
+### Large Batch Processing (100-200+ Emails)
+
+```bash
+# Process large file with batch processing
+python3 coin.py \
+  --input account_large.txt \
+  --threads 10 \
+  --batch-size 50 \
+  --save-progress \
+  --no-prompt
+
+# Resume interrupted batch processing
+python3 coin.py \
+  --input account_large.txt \
+  --resume \
+  --threads 10 \
+  --no-prompt
+```
+
 ### Advanced Options
 
 ```bash
@@ -58,19 +80,31 @@ python3 coin.py \
 
 ## Command Line Options
 
+### Basic Options
 - `--input`: Input file containing emails (default: account.txt)
-- `--proxy`: Single proxy in various formats
-- `--proxies`: File containing multiple proxies (one per line)
-- `--threads`: Number of concurrent threads (default: 5)
+- `--threads`: Number of concurrent threads (default: 5, increase to 10-20 for large batches)
 - `--retries`: Number of retries per email (default: 4)
 - `--min-delay`: Minimum delay between checks in seconds (default: 2)
 - `--max-delay`: Maximum delay between checks in seconds (default: 4)
-- `--test-mode`: Enable test mode (format validation only)
-- `--no-prompt`: Skip interactive proxy prompt
-- `--force-selenium`: Force Selenium-based checking
-- `--requests-only`: Disable Selenium fallback
 - `--output-json`: Save results to JSON file
 - `--verbose`: Enable verbose logging
+
+### Batch Processing Options
+- `--resume`: Resume from previous run (skip already checked emails)
+- `--batch-size`: Process emails in batches (0 = process all at once)
+- `--save-progress`: Save progress periodically for large batches
+
+### Proxy Options
+- `--proxy`: Single proxy in various formats
+- `--proxies`: File containing multiple proxies (one per line)
+- `--no-prompt`: Skip interactive proxy prompt
+
+### Mode Options
+- `--test-mode`: Enable test mode (format validation only)
+- `--force-selenium`: Force Selenium-based checking
+- `--requests-only`: Disable Selenium fallback
+
+### DNS Bypass Options
 - `--use-doh`: Use DNS-over-HTTPS to bypass DNS blocks (enabled by default)
 - `--no-dns-bypass`: Disable DNS bypass features
 
@@ -136,6 +170,53 @@ When DNS blocking is detected:
 - The tool automatically tries DoH resolution
 - Shows resolved IP addresses in the output
 - Falls back to test mode if all methods fail
+
+## Batch Processing for Large Datasets
+
+The tool is optimized for processing 100-200+ emails efficiently:
+
+### Key Features
+- **Resume Capability**: Automatically skip already checked emails
+- **Batch Processing**: Split large datasets into manageable batches
+- **Progress Tracking**: Real-time progress with ETA estimation
+- **Detailed Reports**: Summary statistics for large batches
+
+### Best Practices for Large Batches
+
+```bash
+# For 100-200 emails with fast processing
+python3 coin.py --input account_large.txt \
+  --threads 15 \
+  --batch-size 50 \
+  --min-delay 0.5 \
+  --max-delay 1.5 \
+  --save-progress \
+  --no-prompt
+
+# For very large batches (500+ emails) with resume capability
+python3 coin.py --input huge_list.txt \
+  --threads 20 \
+  --batch-size 100 \
+  --resume \
+  --save-progress \
+  --min-delay 1 \
+  --max-delay 2 \
+  --no-prompt
+```
+
+### Performance Tips
+- **Thread Count**: Use 10-20 threads for large batches (default: 5)
+- **Batch Size**: Set to 50-100 for optimal performance
+- **Delays**: Lower delays (0.5-1.5s) for faster processing in test mode
+- **Resume**: Use `--resume` to continue interrupted processing
+- **Progress Saving**: Enable `--save-progress` for batches > 200 emails
+
+### Output for Large Batches
+The tool generates a detailed summary report:
+- Total emails processed and processing time
+- Average processing rate (emails/sec)
+- Format validation breakdown
+- Registration status statistics
 
 ## Test Mode
 
