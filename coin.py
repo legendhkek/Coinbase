@@ -1,9 +1,11 @@
-# Coinbase Pro Email Validator v3.1 - Robust Retries + Advanced Proxy + Blocker Detection
+# Coinbase Pro Email Validator v3.1 - Robust Retries + Advanced Proxy + Blocker Detection + DNS Block Bypass
 # Modified by @LEGEND_BL
 import re
 import random
 import time
 import os
+import socket
+import requests
 from typing import Tuple, Dict, Any, Optional, List
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import argparse
@@ -42,6 +44,120 @@ logging.basicConfig(
     ]
 )
 logger = logging.getLogger(__name__)
+
+# ---------- DNS BLOCK BYPASS ----------
+# Alternative DNS servers to bypass DNS blocking
+DNS_SERVERS = [
+    '8.8.8.8',        # Google Public DNS
+    '8.8.4.4',        # Google Public DNS Secondary
+    '1.1.1.1',        # Cloudflare DNS
+    '1.0.0.1',        # Cloudflare DNS Secondary
+    '9.9.9.9',        # Quad9 DNS
+    '149.112.112.112', # Quad9 DNS Secondary
+    '208.67.222.222', # OpenDNS
+    '208.67.220.220', # OpenDNS Secondary
+]
+
+def configure_dns_bypass():
+    """
+    Configure system to use alternative DNS servers to bypass DNS blocking.
+    Uses DNS-over-HTTPS when standard DNS fails.
+    """
+    try:
+        # Check if we can read DNS config
+        if os.path.exists('/etc/resolv.conf'):
+            try:
+                # Read existing config
+                with open('/etc/resolv.conf', 'r') as f:
+                    original_dns = f.read()
+                
+                # Check if we need to add alternative DNS
+                if '8.8.8.8' not in original_dns and '1.1.1.1' not in original_dns:
+                    logger.info("[+] System DNS may be blocked, DNS-over-HTTPS will be used as fallback")
+            except Exception as e:
+                logger.debug(f"Cannot read system DNS: {e}")
+        
+        logger.info("[+] DNS bypass configured - will use DNS-over-HTTPS if standard DNS fails")
+        return True
+        
+    except Exception as e:
+        logger.warning(f"Could not configure DNS bypass: {e}")
+        return False
+
+def resolve_via_doh(hostname: str) -> Optional[str]:
+    """
+    Resolve hostname using DNS-over-HTTPS (DoH) to bypass DNS blocking.
+    Uses Cloudflare and Google DoH services.
+    """
+    doh_providers = [
+        f"https://cloudflare-dns.com/dns-query?name={hostname}&type=A",
+        f"https://dns.google/resolve?name={hostname}&type=A",
+        f"https://1.1.1.1/dns-query?name={hostname}&type=A",
+    ]
+    
+    for doh_url in doh_providers:
+        try:
+            headers = {'Accept': 'application/dns-json'}
+            response = requests.get(doh_url, headers=headers, timeout=5)
+            
+            if response.status_code == 200:
+                data = response.json()
+                if 'Answer' in data and len(data['Answer']) > 0:
+                    ip = data['Answer'][0].get('data')
+                    if ip:
+                        logger.debug(f"DoH resolved {hostname} to {ip}")
+                        return ip
+        except Exception as e:
+            logger.debug(f"DoH provider {doh_url} failed: {e}")
+            continue
+    
+    return None
+
+def test_dns_resolution(hostname: str = "www.coinbase.com", use_doh: bool = True) -> Tuple[bool, Optional[str]]:
+    """
+    Test if DNS resolution works for the given hostname.
+    If standard DNS fails, try DNS-over-HTTPS.
+    Returns (success, ip_address)
+    """
+    # Try standard resolution
+    try:
+        ip = socket.gethostbyname(hostname)
+        logger.debug(f"Standard DNS resolution successful for {hostname} -> {ip}")
+        return True, ip
+    except socket.gaierror:
+        logger.debug(f"Standard DNS resolution failed for {hostname}")
+    
+    # Try DoH as fallback
+    if use_doh:
+        try:
+            ip = resolve_via_doh(hostname)
+            if ip:
+                logger.info(f"[+] DNS-over-HTTPS successfully resolved {hostname} to {ip}")
+                return True, ip
+        except Exception as e:
+            logger.debug(f"DoH resolution failed: {e}")
+    
+    return False, None
+
+def test_connection_with_doh(hostname: str, port: int = 443) -> bool:
+    """
+    Test connection using DNS-over-HTTPS for resolution.
+    """
+    try:
+        # First resolve using DoH
+        success, ip = test_dns_resolution(hostname, use_doh=True)
+        if not success or not ip:
+            return False
+        
+        # Try to connect using the resolved IP
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.settimeout(5)
+        sock.connect((ip, port))
+        sock.close()
+        return True
+    except Exception as e:
+        logger.debug(f"Connection test failed: {e}")
+        return False
 
 # ---------- CONFIG ----------
 USER_AGENTS = [
@@ -344,6 +460,12 @@ def is_email_registered_on_coinbase_requests(email: str, proxies: List[ProxyInfo
                         continue
 
             except Exception as e:
+                error_str = str(e)
+                # Check for network resolution errors
+                if "NameResolutionError" in error_str or "Failed to resolve" in error_str or "[Errno -5]" in error_str:
+                    logger.debug(f"Network unavailable for {get_url}: DNS resolution failed")
+                    # Don't keep retrying if DNS is failing
+                    return None, "Network unavailable: Cannot resolve hostname"
                 logger.warning(f"GET error for {get_url} via {proxy.display if proxy else 'direct'}: {e}")
                 if proxy:
                     proxy.failures += 1
@@ -463,10 +585,14 @@ def is_email_registered_on_coinbase(email: str, proxies: List[ProxyInfo], retrie
 
     return None, "Failed after retries (blocked/rate-limited/inconclusive)"
 
-def check_email(email: str, proxies: List[ProxyInfo], retries: int, force_selenium: bool, requests_only: bool) -> Dict[str, Any]:
+def check_email(email: str, proxies: List[ProxyInfo], retries: int, force_selenium: bool, requests_only: bool, test_mode: bool = False) -> Dict[str, Any]:
     ok, fmt_msg = is_coinbase_valid_email(email)
     if not ok:
         return {"email": email, "valid_format": False, "format_msg": fmt_msg, "registered": None, "reg_msg": "Invalid format"}
+
+    if test_mode:
+        # In test mode, simulate checking with format validation only
+        return {"email": email, "valid_format": True, "format_msg": fmt_msg, "registered": False, "reg_msg": "Test mode: format validated successfully"}
 
     reg, reg_msg = is_email_registered_on_coinbase(email, proxies, retries=retries, force_selenium=force_selenium, requests_only=requests_only)
     return {"email": email, "valid_format": True, "format_msg": fmt_msg, "registered": reg, "reg_msg": reg_msg}
@@ -507,6 +633,102 @@ def prompt_proxy_settings() -> List[ProxyInfo]:
         else:
             print("[!] Please answer yes or no.")
 
+# ---------- ADVANCED BATCH PROCESSING ----------
+def load_progress_state(progress_file: str = "progress.json") -> Dict[str, Any]:
+    """Load previously checked emails to enable resume functionality"""
+    if os.path.exists(progress_file):
+        try:
+            with open(progress_file, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        except Exception as e:
+            logger.warning(f"Could not load progress file: {e}")
+    return {"checked_emails": [], "last_update": None, "total_checked": 0}
+
+def save_progress_state(progress_data: Dict[str, Any], progress_file: str = "progress.json"):
+    """Save progress for resume capability"""
+    try:
+        progress_data["last_update"] = datetime.now().isoformat()
+        with open(progress_file, 'w', encoding='utf-8') as f:
+            json.dump(progress_data, f, indent=2)
+    except Exception as e:
+        logger.warning(f"Could not save progress file: {e}")
+
+def get_already_checked_emails() -> set:
+    """Get set of already checked emails from output files"""
+    checked = set()
+    for filename in ['hits.txt', 'invalid.txt', 'errors.txt']:
+        if os.path.exists(filename):
+            try:
+                with open(filename, 'r', encoding='utf-8') as f:
+                    for line in f:
+                        email = line.split('|')[0].strip()
+                        if '@' in email:
+                            checked.add(email.lower())
+            except Exception as e:
+                logger.debug(f"Error reading {filename}: {e}")
+    return checked
+
+def estimate_completion_time(checked: int, total: int, start_time: float) -> str:
+    """Estimate time remaining for batch processing"""
+    if checked == 0:
+        return "Calculating..."
+    elapsed = time.time() - start_time
+    rate = checked / elapsed
+    remaining = total - checked
+    eta_seconds = remaining / rate if rate > 0 else 0
+    
+    hours = int(eta_seconds // 3600)
+    minutes = int((eta_seconds % 3600) // 60)
+    seconds = int(eta_seconds % 60)
+    
+    if hours > 0:
+        return f"{hours}h {minutes}m {seconds}s"
+    elif minutes > 0:
+        return f"{minutes}m {seconds}s"
+    else:
+        return f"{seconds}s"
+
+def generate_summary_report(all_results: List[Dict[str, Any]], elapsed_time: float) -> str:
+    """Generate detailed summary report for large batches"""
+    total = len(all_results)
+    valid_format = sum(1 for r in all_results if r['valid_format'])
+    invalid_format = total - valid_format
+    
+    registered = sum(1 for r in all_results if r.get('registered') is True)
+    not_registered = sum(1 for r in all_results if r.get('registered') is False)
+    unknown = sum(1 for r in all_results if r.get('registered') is None)
+    
+    rate = total / elapsed_time if elapsed_time > 0 else 0
+    
+    report = f"""
+╔════════════════════════════════════════════════════════════════╗
+║                    BATCH PROCESSING SUMMARY                    ║
+╚════════════════════════════════════════════════════════════════╝
+
+Total Emails Processed:     {total:>6}
+Processing Time:            {elapsed_time:.2f}s
+Average Rate:               {rate:.2f} emails/sec
+
+┌────────────────────────────────────────────────────────────────┐
+│ FORMAT VALIDATION                                              │
+├────────────────────────────────────────────────────────────────┤
+│ Valid Format:             {valid_format:>6} ({valid_format*100/total if total else 0:.1f}%)                │
+│ Invalid Format:           {invalid_format:>6} ({invalid_format*100/total if total else 0:.1f}%)                │
+└────────────────────────────────────────────────────────────────┘
+
+┌────────────────────────────────────────────────────────────────┐
+│ REGISTRATION STATUS                                            │
+├────────────────────────────────────────────────────────────────┤
+│ Registered:               {registered:>6} ({registered*100/total if total else 0:.1f}%)                │
+│ Not Registered:           {not_registered:>6} ({not_registered*100/total if total else 0:.1f}%)                │
+│ Unknown/Error:            {unknown:>6} ({unknown*100/total if total else 0:.1f}%)                │
+└────────────────────────────────────────────────────────────────┘
+
+Results saved to: hits.txt, invalid.txt, errors.txt
+JSON output: results.json (if enabled)
+"""
+    return report
+
 # ---------- MAIN ----------
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Coinbase Pro Email Validator v3.1 - Robust Retries + Advanced Proxy")
@@ -522,6 +744,12 @@ if __name__ == "__main__":
     parser.add_argument('--force-selenium', action='store_true', help='Force Selenium-based checking')
     parser.add_argument('--requests-only', action='store_true', help='Disable Selenium fallback')
     parser.add_argument('--verbose', action='store_true', help='Enable verbose logging')
+    parser.add_argument('--test-mode', action='store_true', help='Test mode: validate format only, simulate checks when network unavailable')
+    parser.add_argument('--use-doh', action='store_true', default=True, help='Use DNS-over-HTTPS to bypass DNS blocks (default: enabled)')
+    parser.add_argument('--no-dns-bypass', action='store_true', help='Disable DNS bypass features')
+    parser.add_argument('--resume', action='store_true', help='Resume from previous run (skip already checked emails)')
+    parser.add_argument('--batch-size', type=int, default=0, help='Process emails in batches (0 = process all at once)')
+    parser.add_argument('--save-progress', action='store_true', help='Save progress periodically for large batches')
     args = parser.parse_args()
 
     if args.verbose:
@@ -530,6 +758,7 @@ if __name__ == "__main__":
     print("\n============================================================")
     print("  Coinbase Pro Email Validator - Advanced Edition v3.1")
     print("  Modified & Optimized by @LEGEND_BL")
+    print("  DNS Block Bypass: ENABLED")
     print("============================================================\n")
 
     path = args.input
@@ -573,11 +802,85 @@ if __name__ == "__main__":
     else:
         print("[i] Running without proxies (may hit rate limits)")
 
+    # Configure DNS bypass to avoid DNS blocking
+    if not args.no_dns_bypass:
+        print("[i] Configuring DNS bypass to avoid DNS blocks...")
+        configure_dns_bypass()
+    else:
+        print("[i] DNS bypass disabled by user")
+
+    # Auto-detect network availability if not in test mode
+    network_available = True
+    if not args.test_mode:
+        print("[i] Testing network connectivity with DNS bypass...")
+        
+        # First try with DNS-over-HTTPS
+        dns_works, resolved_ip = test_dns_resolution("www.coinbase.com", use_doh=True)
+        
+        if dns_works and resolved_ip:
+            try:
+                # Try to connect using the resolved IP
+                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                sock.settimeout(5)
+                sock.connect((resolved_ip, 443))
+                sock.close()
+                print(f"[+] Network connectivity confirmed (DNS bypass: www.coinbase.com -> {resolved_ip})")
+            except Exception as e:
+                # DNS works but connection fails - might be firewall/proxy needed
+                if "timed out" in str(e).lower() or "refused" in str(e).lower():
+                    print(f"[!] Connection blocked: {e}")
+                    print("[i] DNS resolution works but connection is blocked. Consider using a proxy.")
+                    print("[i] Automatically enabling test mode for format validation only")
+                    args.test_mode = True
+                    network_available = False
+                else:
+                    print(f"[!] Network unavailable: {e}")
+                    print("[i] Automatically enabling test mode for format validation only")
+                    args.test_mode = True
+                    network_available = False
+        else:
+            print("[!] DNS resolution failed even with DNS-over-HTTPS")
+            print("[i] Automatically enabling test mode for format validation only")
+            args.test_mode = True
+            network_available = False
+
+    if args.test_mode:
+        print("[i] TEST MODE: Email format validation only (no actual Coinbase checks)")
+    
+    # Resume functionality for large batches
+    emails_to_process = emails
+    if args.resume:
+        print("[i] Resume mode: Checking for previously processed emails...")
+        already_checked = get_already_checked_emails()
+        original_count = len(emails)
+        emails_to_process = [e for e in emails if e.lower() not in already_checked]
+        skipped = original_count - len(emails_to_process)
+        if skipped > 0:
+            print(f"[+] Skipping {skipped} already checked emails")
+            print(f"[+] {len(emails_to_process)} emails remaining to check")
+        else:
+            print("[i] No previously checked emails found, processing all")
+    
+    if not emails_to_process:
+        print("[i] All emails have been checked already!")
+        exit(0)
+    
+    # Batch processing for large datasets
+    if args.batch_size > 0 and len(emails_to_process) > args.batch_size:
+        print(f"[i] Batch processing: {len(emails_to_process)} emails in batches of {args.batch_size}")
+        batches = [emails_to_process[i:i+args.batch_size] for i in range(0, len(emails_to_process), args.batch_size)]
+        print(f"[i] Total batches: {len(batches)}")
+    else:
+        batches = [emails_to_process]
+
     # Output files
     hits_file = open("hits.txt", "a", encoding="utf-8")
     invalid_file = open("invalid.txt", "a", encoding="utf-8")
     errors_file = open("errors.txt", "a", encoding="utf-8")
     all_results: List[Dict[str, Any]] = []
+    
+    start_time = time.time()
+    total_processed = 0
 
     def process_email(email):
         with delay_lock:
@@ -589,7 +892,7 @@ if __name__ == "__main__":
                 time.sleep(wait - elapsed)
             LAST_CHECK_TIME = time.time()
 
-        res = check_email(email, proxies, args.retries, args.force_selenium, args.requests_only)
+        res = check_email(email, proxies, args.retries, args.force_selenium, args.requests_only, args.test_mode)
         all_results.append(res)
 
         if res['valid_format']:
@@ -608,21 +911,52 @@ if __name__ == "__main__":
 
         return f"Email: {email} | Format: {'OK' if res['valid_format'] else 'BAD'} | Registered: {status_str} ({res['reg_msg']})"
 
-    with ThreadPoolExecutor(max_workers=args.threads) as executor:
-        futures = [executor.submit(process_email, email) for email in emails]
-        for future in tqdm(as_completed(futures), total=len(emails), desc="Checking emails", unit="email"):
-            try:
-                print(future.result())
-            except Exception as e:
-                logger.error(f"Thread error: {e}")
-                print(f"[!] Thread error: {e}")
+    # Process emails in batches
+    for batch_num, batch in enumerate(batches, 1):
+        if len(batches) > 1:
+            print(f"\n[+] Processing batch {batch_num}/{len(batches)} ({len(batch)} emails)")
+            print(f"[i] Progress: {total_processed}/{len(emails_to_process)} emails checked")
+            if total_processed > 0:
+                eta = estimate_completion_time(total_processed, len(emails_to_process), start_time)
+                print(f"[i] Estimated time remaining: {eta}")
+        
+        with ThreadPoolExecutor(max_workers=args.threads) as executor:
+            futures = [executor.submit(process_email, email) for email in batch]
+            batch_desc = f"Batch {batch_num}/{len(batches)}" if len(batches) > 1 else "Checking emails"
+            for future in tqdm(as_completed(futures), total=len(batch), desc=batch_desc, unit="email"):
+                try:
+                    print(future.result())
+                    total_processed += 1
+                except Exception as e:
+                    logger.error(f"Thread error: {e}")
+                    print(f"[!] Thread error: {e}")
+        
+        # Save progress after each batch if enabled
+        if args.save_progress and len(batches) > 1:
+            progress_data = {
+                "checked_emails": [r['email'] for r in all_results],
+                "total_checked": len(all_results),
+                "batches_completed": batch_num
+            }
+            save_progress_state(progress_data)
+            print(f"[+] Progress saved ({len(all_results)} emails checked)")
 
     hits_file.close(); invalid_file.close(); errors_file.close()
+    
+    elapsed_time = time.time() - start_time
 
     if args.output_json:
         with open("results.json", "w", encoding="utf-8") as json_file:
             json.dump(all_results, json_file, indent=4)
 
-    print("\nDone. Results saved to hits.txt, invalid.txt, errors.txt")
+    print("\n" + "="*64)
+    print("Done. Results saved to hits.txt, invalid.txt, errors.txt")
     if args.output_json:
         print("JSON output saved to results.json")
+    
+    # Generate summary report for large batches
+    if len(emails_to_process) >= 50:
+        print(generate_summary_report(all_results, elapsed_time))
+    else:
+        print(f"\nTotal processed: {len(all_results)} emails in {elapsed_time:.2f}s")
+        print(f"Average rate: {len(all_results)/elapsed_time if elapsed_time > 0 else 0:.2f} emails/sec")

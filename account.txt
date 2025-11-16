@@ -1,0 +1,38 @@
+# Test emails for Coinbase email checker - 20+ test cases
+# Valid format emails - mix of potentially registered and not registered
+john.doe@gmail.com
+jane.smith@yahoo.com
+test.user@outlook.com
+admin@coinbase.com
+contact@protonmail.com
+user123@hotmail.com
+testing@icloud.com
+sample.email@aol.com
+example@zoho.com
+demo.account@fastmail.com
+# More valid emails
+alice.wonderland@gmail.com
+bob.builder@yahoo.com
+charlie.brown@outlook.com
+david.jones@gmail.com
+emily.watson@yahoo.com
+frank.ocean@gmail.com
+grace.hopper@outlook.com
+henry.ford@gmail.com
+iris.chang@yahoo.com
+jack.daniels@outlook.com
+# Additional test cases
+kate.middleton@gmail.com
+liam.neeson@yahoo.com
+mary.poppins@outlook.com
+nathan.drake@gmail.com
+olivia.wilde@yahoo.com
+# Invalid format tests - these should be caught by validation
+invalid.email@
+@nodomain.com
+not-an-email
+test@.com
+user@domain
+toolonglocal12345678901234567890123456789012345678901234567890123456789012345@test.com
+test@tempmail.org
+disposable@10minutemail.com

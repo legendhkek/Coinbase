@@ -1,0 +1,28 @@
+# Email checker output files
+hits.txt
+invalid.txt
+errors.txt
+coin_checker.log
+results.json
+progress.json
+
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Virtual environment
+venv/
+env/
+ENV/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
