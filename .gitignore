@@ -4,6 +4,7 @@ invalid.txt
 errors.txt
 coin_checker.log
 results.json
+progress.json
 
 # Python cache
 __pycache__/
